@@ -1,4 +1,4 @@
-name: Build controller APK
+name: Build controller shared-memory APK
 
 on:
   push:
@@ -56,24 +56,24 @@ jobs:
               namespace 'com.velgame.mobile'
               compileSdk 35
               defaultConfig {
-                  applicationId 'com.velgame.controller'
-                  minSdk 23
+                  applicationId 'com.velgame.controller.memory'
+                  minSdk 24
                   targetSdk 35
-                  versionCode 2
-                  versionName '1.1-controller'
+                  versionCode 3
+                  versionName '1.2-memory'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
                   targetCompatibility JavaVersion.VERSION_17
               }
           }
-          dependencies { implementation 'androidx.webkit:webkit:1.12.1' }
+          dependencies { implementation 'androidx.webkit:webkit:1.18.0-rc01' }
           VEL_SOURCE_3_END
           
           cat > 'app/src/main/AndroidManifest.xml' <<'VEL_SOURCE_4_END'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
-              <application android:label="Vel Controller" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:hardwareAccelerated="true">
+              <application android:label="Vel Controller 2" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:hardwareAccelerated="true">
                   <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -226,6 +226,8 @@ jobs:
               private WebChromeClient.CustomViewCallback customCallback;
               private String bridge;
               private boolean earlyScript;
+              private boolean sharedMemoryEnabled;
+              private String sharedMemoryStatus = "Shared-memory support unavailable";
           
               @Override public void onCreate(Bundle state) {
                   super.onCreate(state);
@@ -233,6 +235,16 @@ jobs:
                   root = new FrameLayout(this);
                   setContentView(root);
                   web = new WebView(this);
+                  if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
+                          && WebViewFeature.isFeatureSupported(WebViewFeature.CROSS_ORIGIN_ISOLATED_ALLOWLIST)) {
+                      try {
+                          WebViewCompat.getProfile(web).setCrossOriginIsolatedAllowlist(Collections.singleton("https://vel.gg"));
+                          sharedMemoryEnabled = true;
+                          sharedMemoryStatus = "Shared-memory support enabled for https://vel.gg";
+                      } catch (RuntimeException error) {
+                          sharedMemoryStatus = "Shared-memory setup failed: " + error.getClass().getSimpleName();
+                      }
+                  }
                   web.setBackgroundColor(Color.BLACK);
                   root.addView(web, new FrameLayout.LayoutParams(-1, -1));
                   WebSettings s = web.getSettings();
@@ -257,16 +269,26 @@ jobs:
                   } catch (IOException e) { throw new IllegalStateException(e); }
           
                   earlyScript = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT);
-                  if (earlyScript) WebViewCompat.addDocumentStartJavaScript(web, bridge, Collections.singleton("*"));
+                  if (earlyScript) WebViewCompat.addDocumentStartJavaScript(web, bridge, Collections.singleton("https://vel.gg"));
                   controller = new Controller();
                   root.addView(controller, new FrameLayout.LayoutParams(-1, -1));
                   web.setWebViewClient(new WebViewClient() {
+                      @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                          if (sharedMemoryEnabled && request.isForMainFrame() && "GET".equals(request.getMethod())
+                                  && isGameOrigin(request.getUrl())) return isolatedDocument(request);
+                          return null;
+                      }
                       @Override public void onPageStarted(WebView view, String url, Bitmap icon) { controller.releaseAll(); }
                       @Override public void onPageFinished(WebView view, String url) {
                           if (!earlyScript) web.evaluateJavascript(bridge, null);
                       }
                       @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                          return !"https".equalsIgnoreCase(request.getUrl().getScheme());
+                          if (isGameOrigin(request.getUrl())) return false;
+                          if (request.isForMainFrame() && "https".equalsIgnoreCase(request.getUrl().getScheme())) {
+                              try { startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, request.getUrl())); }
+                              catch (android.content.ActivityNotFoundException ignored) {}
+                          }
+                          return true;
                       }
                       @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                           if (request.isForMainFrame()) loadError();
@@ -289,9 +311,85 @@ jobs:
                   });
                   web.loadUrl(URL);
                   immersive();
+                  if (!sharedMemoryEnabled) new AlertDialog.Builder(this).setTitle("WebView update required")
+                      .setMessage("This installed Android System WebView cannot enable the shared memory this game needs. Update Android System WebView in the Play Store and reopen this app. If the latest version still shows this message, this WebView build is not supported. The controller cannot emulate shared memory.")
+                      .setPositiveButton("Open Play Store", (d,w) -> {
+                          try { startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                              android.net.Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.webview"))); }
+                          catch (android.content.ActivityNotFoundException ignored) {}
+                      }).setNegativeButton("Close", null).show();
                   if (!earlyScript) new AlertDialog.Builder(this).setTitle("Update Android System WebView")
                       .setMessage("Update Android System WebView in the Play Store, then reopen Vel Game. This device cannot yet apply desktop compatibility before the game starts.")
                       .setPositiveButton("OK", null).show();
+              }
+          
+              private boolean isGameOrigin(android.net.Uri uri) {
+                  return "https".equalsIgnoreCase(uri.getScheme()) && "vel.gg".equalsIgnoreCase(uri.getHost())
+                      && (uri.getPort() == -1 || uri.getPort() == 443);
+              }
+              // Preserve the original HTTPS document and its security headers. Add the
+              // Document-Isolation-Policy required by WebView's per-origin opt-in API.
+              // Only main-frame GET documents from the exact game origin are handled.
+              private WebResourceResponse isolatedDocument(WebResourceRequest request) {
+                  java.net.HttpURLConnection connection = null;
+                  try {
+                      java.net.URL address = new java.net.URL(request.getUrl().toString());
+                      for (int redirect = 0; redirect < 6; redirect++) {
+                          if (!isGameOrigin(android.net.Uri.parse(address.toString()))) return null;
+                          connection = (java.net.HttpURLConnection) address.openConnection();
+                          connection.setInstanceFollowRedirects(false);
+                          connection.setConnectTimeout(15000);
+                          connection.setReadTimeout(30000);
+                          for (Map.Entry<String,String> header : request.getRequestHeaders().entrySet()) {
+                              String name = header.getKey();
+                              if (!name.equalsIgnoreCase("Accept-Encoding") && !name.equalsIgnoreCase("Host")
+                                      && !name.equalsIgnoreCase("If-None-Match") && !name.equalsIgnoreCase("If-Modified-Since"))
+                                  connection.setRequestProperty(name, header.getValue());
+                          }
+                          connection.setRequestProperty("Accept-Encoding", "identity");
+                          String cookie = CookieManager.getInstance().getCookie(address.toString());
+                          if (cookie != null) connection.setRequestProperty("Cookie", cookie);
+                          int status = connection.getResponseCode();
+                          for (Map.Entry<String,List<String>> header : connection.getHeaderFields().entrySet()) {
+                              if (header.getKey() != null && header.getKey().equalsIgnoreCase("Set-Cookie"))
+                                  for (String value : header.getValue()) CookieManager.getInstance().setCookie(address.toString(), value);
+                          }
+                          if (status >= 300 && status < 400) {
+                              String location = connection.getHeaderField("Location");
+                              connection.disconnect(); connection = null;
+                              if (location == null) return null;
+                              address = new java.net.URL(address, location);
+                              continue;
+                          }
+                          String contentType = connection.getContentType();
+                          if (status != 200 || contentType == null || !contentType.toLowerCase(Locale.ROOT).startsWith("text/html")) {
+                              connection.disconnect(); return null;
+                          }
+                          Map<String,String> headers = new HashMap<>();
+                          for (Map.Entry<String,List<String>> header : connection.getHeaderFields().entrySet()) {
+                              if (header.getKey() != null) headers.put(header.getKey(), String.join(", ", header.getValue()));
+                          }
+                          headers.put("Document-Isolation-Policy", "isolate-and-require-corp");
+                          final java.net.HttpURLConnection active = connection;
+                          InputStream stream = new FilterInputStream(connection.getInputStream()) {
+                              @Override public void close() throws IOException { try { super.close(); } finally { active.disconnect(); } }
+                          };
+                          return new WebResourceResponse("text/html", "UTF-8", 200, "OK", headers, stream);
+                      }
+                  } catch (IOException | RuntimeException error) {
+                      if (connection != null) connection.disconnect();
+                  }
+                  return null;
+              }
+              private void diagnostics() {
+                  controller.releaseAll();
+                  String js = "JSON.stringify({origin:location.origin,isolated:crossOriginIsolated,sharedMemory:typeof SharedArrayBuffer!=='undefined',wasmJSPI:typeof WebAssembly.Suspending==='function',storage:!!navigator.storage?.getDirectory,workers:typeof Worker!=='undefined'})";
+                  web.evaluateJavascript(js, value -> {
+                      android.content.pm.PackageInfo provider = WebViewCompat.getCurrentWebViewPackage(this);
+                      String details = "Vel Controller 2 (1.2)\n" + sharedMemoryStatus + "\nWebView: "
+                          + (provider == null ? "unknown" : provider.versionName) + "\n\n" + value;
+                      new AlertDialog.Builder(this).setTitle("Browser diagnostics").setMessage(details).setPositiveButton("OK", null).show();
+                  });
               }
           
               private void closeCustomView() {
@@ -326,7 +424,7 @@ jobs:
               }
               private void settings() {
                   controller.releaseAll();
-                  String[] options = {controller.shown ? "Hide controls (touch game menus)" : "Show controls", "Look sensitivity", "Reload original link", "Controller help"};
+                  String[] options = {controller.shown ? "Hide controls (touch game menus)" : "Show controls", "Look sensitivity", "Reload original link", "Controller help", "Browser diagnostics"};
                   new AlertDialog.Builder(this).setTitle("Vel controller").setItems(options, (d, which) -> {
                       if (which == 0) { controller.shown = !controller.shown; controller.invalidate(); }
                       if (which == 1) new AlertDialog.Builder(this).setTitle("Look sensitivity")
@@ -336,6 +434,7 @@ jobs:
                               dialog.dismiss();
                           }).setNegativeButton("Close", null).show();
                       if (which == 2) web.loadUrl(URL);
+                      if (which == 4) diagnostics();
                       if (which == 3) new AlertDialog.Builder(this).setTitle("Controls")
                           .setMessage("Left stick: WASD\nRight pad: mouse look\nFIRE / AIM: mouse buttons\nRUN: Shift • JUMP: Space\nUSE: E • RELOAD: R • MELEE: F\nCROUCH: Ctrl • SWAP: Q\nENTER: confirm • ESC: pause\n\nHold buttons as needed. Use several fingers to move, look and fire together. Hide controls to tap game menus.\n\nThese are standard mappings; this game's exact bindings are unverified. Desktop mode and mouse capture are compatibility shims, not a guarantee that the game runs on Android.")
                           .setPositiveButton("OK", null).show();
@@ -507,6 +606,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Vel-Controller-APK
+          name: Vel-Controller-2-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
