@@ -1,4 +1,4 @@
-name: Build my game APK
+name: Build controller APK
 
 on:
   push:
@@ -12,366 +12,501 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Set up Android
         uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools'
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-
       - name: Install Android build tools
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
-
-      - name: Create Android project
+      - name: Create controller project
         shell: bash
         run: |
-          mkdir -p app/src/main/java/com/velgame/mobile
-
-          cat > settings.gradle <<'EOF'
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
+          mkdir -p app/src/main/java/com/velgame/mobile app/src/main/assets
+          
+          cat > 'settings.gradle' <<'VEL_SOURCE_0_END'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
           rootProject.name = 'VelGame'
           include ':app'
-          EOF
-
-          cat > build.gradle <<'EOF'
+          VEL_SOURCE_0_END
+          
+          cat > 'build.gradle' <<'VEL_SOURCE_1_END'
           plugins {
               id 'com.android.application' version '8.7.3' apply false
           }
-          EOF
-
-          cat > app/build.gradle <<'EOF'
-          plugins {
-              id 'com.android.application'
-          }
-
+          VEL_SOURCE_1_END
+          
+          cat > 'gradle.properties' <<'VEL_SOURCE_2_END'
+          android.useAndroidX=true
+          VEL_SOURCE_2_END
+          
+          cat > 'app/build.gradle' <<'VEL_SOURCE_3_END'
+          plugins { id 'com.android.application' }
           android {
               namespace 'com.velgame.mobile'
               compileSdk 35
-
               defaultConfig {
-                  applicationId 'com.velgame.mobile'
+                  applicationId 'com.velgame.controller'
                   minSdk 23
                   targetSdk 35
-                  versionCode 1
-                  versionName '1.0'
+                  versionCode 2
+                  versionName '1.1-controller'
               }
-
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
                   targetCompatibility JavaVersion.VERSION_17
               }
           }
-          EOF
-
-          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          dependencies { implementation 'androidx.webkit:webkit:1.12.1' }
+          VEL_SOURCE_3_END
+          
+          cat > 'app/src/main/AndroidManifest.xml' <<'VEL_SOURCE_4_END'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
-
-              <application
-                  android:label="Vel Game"
-                  android:theme="@android:style/Theme.Material.NoActionBar"
-                  android:allowBackup="false"
-                  android:usesCleartextTraffic="false"
-                  android:hardwareAccelerated="true">
-
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true"
-                      android:configChanges="orientation|screenSize|keyboardHidden">
-
+              <application android:label="Vel Controller" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:hardwareAccelerated="true">
+                  <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
-
                   </activity>
               </application>
           </manifest>
-          EOF
-
-          cat > app/src/main/java/com/velgame/mobile/MainActivity.java <<'EOF'
+          VEL_SOURCE_4_END
+          
+          cat > 'app/src/main/assets/controller.js' <<'VEL_SOURCE_5_END'
+          (() => {
+            if (window.__velController) return;
+            const set = (object, name, value) => {
+              try { Object.defineProperty(object, name, {configurable: true, get: () => value}); } catch (_) {}
+            };
+            set(navigator, 'maxTouchPoints', 0);
+            set(navigator, 'platform', 'Win32');
+            if (navigator.userAgentData) set(navigator.userAgentData, 'mobile', false);
+            // Some desktop-only games also test for the presence of touch-handler properties.
+            for (const property of ['ontouchstart', 'ontouchend']) {
+              let owner = window;
+              while (owner) {
+                try { if (Object.prototype.hasOwnProperty.call(owner, property)) delete owner[property]; } catch (_) {}
+                owner = Object.getPrototypeOf(owner);
+              }
+            }
+          
+            // Preserve viewport and preference queries; alter only input-capability queries.
+            const nativeMatchMedia = window.matchMedia.bind(window);
+            window.matchMedia = query => {
+              const rewritten = String(query).replace(
+                /\(\s*(any-)?(pointer|hover)\s*:\s*(coarse|fine|none|hover)\s*\)/gi,
+                (_, any, type, value) => {
+                  const matches = type.toLowerCase() === 'pointer'
+                    ? value.toLowerCase() === 'fine' : value.toLowerCase() === 'hover';
+                  return matches ? '(min-width: 0px)' : '(max-width: -1px)';
+                }
+              );
+              return nativeMatchMedia(rewritten);
+            };
+          
+            // Android has no captured desktop mouse. Supply relative motion from the look pad.
+            let locked = null;
+            try {
+              Object.defineProperty(document, 'pointerLockElement', {configurable: true, get: () => locked});
+              Object.defineProperty(document, 'mozPointerLockElement', {configurable: true, get: () => locked});
+              Element.prototype.requestPointerLock = function () {
+                locked = this;
+                queueMicrotask(() => document.dispatchEvent(new Event('pointerlockchange')));
+                return Promise.resolve();
+              };
+              Document.prototype.exitPointerLock = function () {
+                locked = null;
+                document.dispatchEvent(new Event('pointerlockchange'));
+              };
+            } catch (_) {}
+          
+            const codes = {
+              KeyW: ['w',87], KeyA: ['a',65], KeyS: ['s',83], KeyD: ['d',68],
+              KeyR: ['r',82], KeyE: ['e',69], KeyF: ['f',70], KeyC: ['c',67],
+              KeyQ: ['q',81], Space: [' ',32], ShiftLeft: ['Shift',16],
+              ControlLeft: ['Control',17], Escape: ['Escape',27], Enter: ['Enter',13],
+              Digit1: ['1',49], Digit2: ['2',50]
+            };
+            const held = new Set();
+            let buttons = 0;
+            let mouseX = innerWidth / 2, mouseY = innerHeight / 2;
+            function target() {
+              return locked || document.querySelector('canvas') || document.activeElement || document.body || document;
+            }
+            function key(code, down, repeat = false) {
+              if (!codes[code]) return;
+              if (!repeat && held.has(code) === down) return;
+              if (down) held.add(code); else held.delete(code);
+              const [value, number] = codes[code];
+              const event = new KeyboardEvent(down ? 'keydown' : 'keyup', {
+                key: value, code, bubbles: true, cancelable: true, repeat,
+                shiftKey: held.has('ShiftLeft'), ctrlKey: held.has('ControlLeft'),
+                location: code.endsWith('Left') ? 1 : 0
+              });
+              set(event, 'keyCode', number);
+              set(event, 'which', number);
+              target().dispatchEvent(event);
+            }
+            function mouse(type, button = 0, dx = 0, dy = 0, click = true) {
+              if (type === 'mousedown') buttons |= button === 2 ? 2 : 1;
+              if (type === 'mouseup') buttons &= ~(button === 2 ? 2 : 1);
+              mouseX = Math.max(0, Math.min(innerWidth - 1, mouseX + dx));
+              mouseY = Math.max(0, Math.min(innerHeight - 1, mouseY + dy));
+              const init = {bubbles: true, cancelable: true, view: window, button, buttons,
+                clientX: mouseX, clientY: mouseY, movementX: dx, movementY: dy};
+              const destination = target();
+              const pointerType = {mousedown:'pointerdown', mouseup:'pointerup', mousemove:'pointermove'}[type];
+              if (pointerType && window.PointerEvent) {
+                destination.dispatchEvent(new PointerEvent(pointerType, {...init, pointerId: 1, pointerType:'mouse', isPrimary:true}));
+              }
+              destination.dispatchEvent(new MouseEvent(type, init));
+              if (click && type === 'mouseup' && button === 0) destination.dispatchEvent(new MouseEvent('click', init));
+            }
+            function reset() {
+              [...held].forEach(code => key(code, false));
+              if (buttons & 1) mouse('mouseup', 0, 0, 0, false);
+              if (buttons & 2) mouse('mouseup', 2, 0, 0, false);
+            }
+            function input(message) {
+              if (!message || message.channel !== 'vel-controller-v1') return;
+              if (message.type === 'key') key(message.code, !!message.down);
+              if (message.type === 'mouse') mouse(message.down ? 'mousedown' : 'mouseup', message.button);
+              if (message.type === 'look') mouse('mousemove', 0, Number(message.dx) || 0, Number(message.dy) || 0);
+              if (message.type === 'reset') reset();
+              // Relay from the top page to nested game frames, including cross-origin frames.
+              for (let i = 0; i < window.frames.length; i++) {
+                try { window.frames[i].postMessage(message, '*'); } catch (_) {}
+              }
+            }
+            window.__velController = input;
+            addEventListener('message', event => {
+              if (window !== window.parent && event.source === window.parent) input(event.data);
+            });
+            addEventListener('blur', reset);
+            document.addEventListener('visibilitychange', () => { if (document.hidden) reset(); });
+            setInterval(() => [...held].forEach(code => key(code, true, true)), 85);
+          })();
+          VEL_SOURCE_5_END
+          
+          cat > 'app/src/main/java/com/velgame/mobile/MainActivity.java' <<'VEL_SOURCE_6_END'
           package com.velgame.mobile;
-
+          
           import android.app.Activity;
           import android.app.AlertDialog;
-          import android.content.Intent;
-          import android.content.ActivityNotFoundException;
-          import android.graphics.Color;
-          import android.net.Uri;
           import android.os.Bundle;
-          import android.view.View;
-          import android.view.WindowManager;
-          import android.webkit.WebChromeClient;
-          import android.webkit.WebResourceError;
-          import android.webkit.WebResourceRequest;
-          import android.webkit.WebResourceResponse;
-          import android.webkit.WebSettings;
-          import android.webkit.WebView;
-          import android.webkit.WebViewClient;
-          import android.widget.FrameLayout;
-          import android.widget.Toast;
-
+          import android.graphics.*;
+          import android.view.*;
+          import android.webkit.*;
+          import android.widget.*;
+          import androidx.webkit.WebViewCompat;
+          import androidx.webkit.WebViewFeature;
+          import org.json.JSONObject;
+          import java.io.*;
+          import java.util.*;
+          
           public class MainActivity extends Activity {
-              private static final String GAME_URL = "https://vel.gg/bo1z";
-
+              private static final String URL = "https://vel.gg/bo1z";
               private WebView web;
-              private FrameLayout root;
-              private View fullscreenView;
-              private WebChromeClient.CustomViewCallback fullscreenCallback;
+              private Controller controller;
               private AlertDialog errorDialog;
-
-              @Override
-              public void onCreate(Bundle savedState) {
-                  super.onCreate(savedState);
-
-                  getWindow().addFlags(
-                      WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                  );
-
+              private FrameLayout root;
+              private View customView;
+              private WebChromeClient.CustomViewCallback customCallback;
+              private String bridge;
+              private boolean earlyScript;
+          
+              @Override public void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                   root = new FrameLayout(this);
-                  root.setBackgroundColor(Color.BLACK);
                   setContentView(root);
-
                   web = new WebView(this);
                   web.setBackgroundColor(Color.BLACK);
                   root.addView(web, new FrameLayout.LayoutParams(-1, -1));
-
-                  WebSettings settings = web.getSettings();
-                  settings.setJavaScriptEnabled(true);
-                  settings.setDomStorageEnabled(true);
-                  settings.setUseWideViewPort(true);
-                  settings.setLoadWithOverviewMode(true);
-                  settings.setMediaPlaybackRequiresUserGesture(false);
-                  settings.setAllowFileAccess(false);
-                  settings.setAllowContentAccess(false);
-                  settings.setMixedContentMode(
-                      WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                  );
-
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setUseWideViewPort(true);
+                  s.setLoadWithOverviewMode(true);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+                  s.setAllowFileAccess(false);
+                  s.setAllowContentAccess(false);
+                  s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+                  java.util.regex.Matcher match = java.util.regex.Pattern.compile("Chrome/([0-9.]+)").matcher(s.getUserAgentString());
+                  String version = match.find() ? match.group(1) : "130.0.0.0";
+                  s.setUserAgentString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + version + " Safari/537.36");
+                  web.setInitialScale(0);
+                  try (InputStream stream = getAssets().open("controller.js")) {
+                      ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                      byte[] bytes = new byte[4096];
+                      int count;
+                      while ((count = stream.read(bytes)) != -1) buffer.write(bytes, 0, count);
+                      bridge = buffer.toString("UTF-8");
+                  } catch (IOException e) { throw new IllegalStateException(e); }
+          
+                  earlyScript = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT);
+                  if (earlyScript) WebViewCompat.addDocumentStartJavaScript(web, bridge, Collections.singleton("*"));
+                  controller = new Controller();
+                  root.addView(controller, new FrameLayout.LayoutParams(-1, -1));
                   web.setWebViewClient(new WebViewClient() {
-                      @Override
-                      public boolean shouldOverrideUrlLoading(
-                          WebView view, WebResourceRequest request
-                      ) {
-                          return handleLink(request.getUrl());
+                      @Override public void onPageStarted(WebView view, String url, Bitmap icon) { controller.releaseAll(); }
+                      @Override public void onPageFinished(WebView view, String url) {
+                          if (!earlyScript) web.evaluateJavascript(bridge, null);
                       }
-
-                      @Override
-                      public boolean shouldOverrideUrlLoading(
-                          WebView view, String url
-                      ) {
-                          return handleLink(Uri.parse(url));
+                      @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          return !"https".equalsIgnoreCase(request.getUrl().getScheme());
                       }
-
-                      @Override
-                      public void onReceivedError(
-                          WebView view,
-                          WebResourceRequest request,
-                          WebResourceError error
-                      ) {
-                          if (request.isForMainFrame()) {
-                              showLoadError();
-                          }
+                      @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                          if (request.isForMainFrame()) loadError();
                       }
-
-                      @Override
-                      public void onReceivedHttpError(
-                          WebView view,
-                          WebResourceRequest request,
-                          WebResourceResponse response
-                      ) {
-                          if (request.isForMainFrame()
-                              && response.getStatusCode() >= 400) {
-                              showLoadError();
-                          }
+                      @Override public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
+                          if (request.isForMainFrame() && response.getStatusCode() >= 400) loadError();
                       }
                   });
-
                   web.setWebChromeClient(new WebChromeClient() {
-                      @Override
-                      public void onShowCustomView(
-                          View view, CustomViewCallback callback
-                      ) {
-                          if (fullscreenView != null) {
-                              callback.onCustomViewHidden();
-                              return;
-                          }
-                          fullscreenView = view;
-                          fullscreenCallback = callback;
-                          root.addView(
-                              view, new FrameLayout.LayoutParams(-1, -1)
-                          );
+                      @Override public void onShowCustomView(View view, CustomViewCallback callback) {
+                          if (customView != null) { callback.onCustomViewHidden(); return; }
+                          customView = view;
+                          customCallback = callback;
+                          root.addView(view, new FrameLayout.LayoutParams(-1, -1));
                           web.setVisibility(View.GONE);
-                          enterFullscreen();
+                          controller.bringToFront();
+                          immersive();
                       }
-
-                      @Override
-                      public void onHideCustomView() {
-                          closeFullscreenVideo();
-                      }
+                      @Override public void onHideCustomView() { closeCustomView(); }
                   });
-
-                  if (savedState == null
-                      || web.restoreState(savedState) == null) {
-                      web.loadUrl(GAME_URL);
-                  }
-
-                  enterFullscreen();
+                  web.loadUrl(URL);
+                  immersive();
+                  if (!earlyScript) new AlertDialog.Builder(this).setTitle("Update Android System WebView")
+                      .setMessage("Update Android System WebView in the Play Store, then reopen Vel Game. This device cannot yet apply desktop compatibility before the game starts.")
+                      .setPositiveButton("OK", null).show();
               }
-
-              private boolean handleLink(Uri uri) {
-                  String scheme = uri.getScheme();
-                  if ("https".equalsIgnoreCase(scheme)) {
-                      return false;
-                  }
-                  if ("http".equalsIgnoreCase(scheme)) {
-                      openBrowser(uri);
-                  }
-                  return true;
+          
+              private void closeCustomView() {
+                  if (customView == null) return;
+                  root.removeView(customView);
+                  customView = null;
+                  web.setVisibility(View.VISIBLE);
+                  WebChromeClient.CustomViewCallback callback = customCallback;
+                  customCallback = null;
+                  if (callback != null) callback.onCustomViewHidden();
               }
-
-              private void openBrowser(Uri uri) {
-                  try {
-                      startActivity(new Intent(Intent.ACTION_VIEW, uri));
-                  } catch (ActivityNotFoundException error) {
-                      Toast.makeText(
-                          this, "No browser installed", Toast.LENGTH_SHORT
-                      ).show();
-                  }
-              }
-
-              private void showLoadError() {
-                  if (isFinishing() || isDestroyed()) {
-                      return;
-                  }
-                  if (errorDialog != null && errorDialog.isShowing()) {
-                      return;
-                  }
-                  errorDialog = new AlertDialog.Builder(this)
-                      .setTitle("Could not load the game")
-                      .setMessage(
-                          "Check your internet connection and try again."
-                      )
-                      .setPositiveButton("Retry", (dialog, which) -> {
-                          web.loadUrl(GAME_URL);
-                      })
-                      .setNeutralButton("Open in browser", (dialog, which) -> {
-                          openBrowser(Uri.parse(GAME_URL));
-                      })
-                      .setNegativeButton("Close", (dialog, which) -> finish())
-                      .create();
+              private void loadError() {
+                  if (isFinishing() || isDestroyed() || (errorDialog != null && errorDialog.isShowing())) return;
+                  controller.releaseAll();
+                  errorDialog = new AlertDialog.Builder(this).setTitle("Game could not load")
+                      .setMessage("Check your connection and retry.")
+                      .setPositiveButton("Retry", (d,w) -> web.loadUrl(URL)).setNegativeButton("Close", null).create();
                   errorDialog.show();
               }
-
-              private void enterFullscreen() {
-                  getWindow().getDecorView().setSystemUiVisibility(
-                      View.SYSTEM_UI_FLAG_FULLSCREEN
-                      | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                      | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                  );
+              private void send(String type, String code, boolean down, int button, float dx, float dy) {
+                  try {
+                      JSONObject data = new JSONObject();
+                      data.put("channel", "vel-controller-v1"); data.put("type", type);
+                      data.put("code", code); data.put("down", down); data.put("button", button);
+                      data.put("dx", dx); data.put("dy", dy);
+                      web.evaluateJavascript("window.__velController && window.__velController(" + data + ")", null);
+                  } catch (org.json.JSONException ignored) {}
               }
-
-              private void closeFullscreenVideo() {
-                  if (fullscreenView == null) {
-                      return;
-                  }
-                  root.removeView(fullscreenView);
-                  fullscreenView = null;
-                  web.setVisibility(View.VISIBLE);
-                  WebChromeClient.CustomViewCallback callback =
-                      fullscreenCallback;
-                  fullscreenCallback = null;
-                  if (callback != null) {
-                      callback.onCustomViewHidden();
-                  }
+              private void key(String code, boolean down) { send("key", code, down, 0, 0, 0); }
+              private void immersive() {
+                  getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
               }
-
-              @Override
-              public void onWindowFocusChanged(boolean hasFocus) {
-                  super.onWindowFocusChanged(hasFocus);
-                  if (hasFocus) {
-                      enterFullscreen();
-                  }
+              private void settings() {
+                  controller.releaseAll();
+                  String[] options = {controller.shown ? "Hide controls (touch game menus)" : "Show controls", "Look sensitivity", "Reload original link", "Controller help"};
+                  new AlertDialog.Builder(this).setTitle("Vel controller").setItems(options, (d, which) -> {
+                      if (which == 0) { controller.shown = !controller.shown; controller.invalidate(); }
+                      if (which == 1) new AlertDialog.Builder(this).setTitle("Look sensitivity")
+                          .setSingleChoiceItems(new String[]{"Low", "Medium", "High"}, controller.sensitivityIndex, (dialog,index) -> {
+                              controller.sensitivityIndex = index;
+                              getPreferences(0).edit().putInt("sensitivity", index).apply();
+                              dialog.dismiss();
+                          }).setNegativeButton("Close", null).show();
+                      if (which == 2) web.loadUrl(URL);
+                      if (which == 3) new AlertDialog.Builder(this).setTitle("Controls")
+                          .setMessage("Left stick: WASD\nRight pad: mouse look\nFIRE / AIM: mouse buttons\nRUN: Shift • JUMP: Space\nUSE: E • RELOAD: R • MELEE: F\nCROUCH: Ctrl • SWAP: Q\nENTER: confirm • ESC: pause\n\nHold buttons as needed. Use several fingers to move, look and fire together. Hide controls to tap game menus.\n\nThese are standard mappings; this game's exact bindings are unverified. Desktop mode and mouse capture are compatibility shims, not a guarantee that the game runs on Android.")
+                          .setPositiveButton("OK", null).show();
+                  }).show();
               }
-
-              @Override
-              protected void onSaveInstanceState(Bundle state) {
-                  web.saveState(state);
-                  super.onSaveInstanceState(state);
+              @Override public void onWindowFocusChanged(boolean focus) {
+                  super.onWindowFocusChanged(focus);
+                  if (focus) immersive(); else if (controller != null) controller.releaseAll();
               }
-
-              @Override
-              protected void onPause() {
-                  if (web != null) {
-                      web.onPause();
-                  }
-                  super.onPause();
+              @Override protected void onPause() { if (controller != null) controller.releaseAll(); if (web != null) web.onPause(); super.onPause(); }
+              @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); }
+              @Override public void onBackPressed() { if (customView != null) closeCustomView(); else settings(); }
+              @Override protected void onDestroy() {
+                  if (errorDialog != null) errorDialog.dismiss();
+                  closeCustomView();
+                  root.removeView(web); web.destroy(); super.onDestroy();
               }
-
-              @Override
-              protected void onResume() {
-                  super.onResume();
-                  if (web != null) {
-                      web.onResume();
+          
+              private class Controller extends View {
+                  final Paint paint = new Paint(3);
+                  final List<Control> controls = new ArrayList<>();
+                  final Map<Integer, Touch> touches = new HashMap<>();
+                  final Set<String> movement = new HashSet<>();
+                  final float density = getResources().getDisplayMetrics().density;
+                  float unit, joyX, joyY, radius, knobX, knobY;
+                  RectF look = new RectF();
+                  boolean shown = true;
+                  int sensitivityIndex = Math.max(0, Math.min(2, getPreferences(0).getInt("sensitivity", 1)));
+                  Controller() { super(MainActivity.this); setContentDescription("Touch game controller"); setFocusable(false); }
+                  class Control {
+                      String label, code;
+                      RectF box;
+                      Control(String l, String c, float x, float y, float width) {
+                          label=l; code=c; box = new RectF(x,y,x+width,y+38*unit);
+                      }
                   }
-              }
-
-              @Override
-              public void onBackPressed() {
-                  if (fullscreenView != null) {
-                      closeFullscreenVideo();
-                  } else if (web.canGoBack()) {
-                      web.goBack();
-                  } else {
-                      super.onBackPressed();
+                  class Touch {
+                      String kind;
+                      Control control;
+                      float x,y;
+                      Touch(String k, Control c, float px, float py) { kind=k; control=c; x=px; y=py; }
                   }
-              }
-
-              @Override
-              protected void onDestroy() {
-                  if (errorDialog != null) {
-                      errorDialog.dismiss();
+                  void add(String l, String c, float x, float y, float width) { controls.add(new Control(l,c,x,y,width)); }
+                  @Override protected void onSizeChanged(int width, int height, int oldw, int oldh) {
+                      releaseAll();
+                      unit = Math.min(density, Math.min(width/700f, height/320f));
+                      float u=unit, w=width, h=height;
+                      joyX=94*u; joyY=h-94*u; radius=65*u;
+                      look.set(w-300*u, h-225*u, w-20*u, h-110*u);
+                      controls.clear();
+                      add("☰", "menu", w/2-23*u, 12*u, 46*u);
+                      add("ESC", "Escape", 18*u, 12*u, 60*u);
+                      add("ENTER", "Enter", 86*u, 12*u, 70*u);
+                      add("RUN", "ShiftLeft", 18*u, h-196*u, 67*u);
+                      add("CROUCH", "ControlLeft", 93*u, h-196*u, 78*u);
+                      add("USE", "KeyE", w-322*u, h-94*u, 66*u);
+                      add("RELOAD", "KeyR", w-248*u, h-94*u, 78*u);
+                      add("AIM", "mouse2", w-162*u, h-94*u, 64*u);
+                      add("FIRE", "mouse0", w-90*u, h-94*u, 72*u);
+                      add("MELEE", "KeyF", w-248*u, h-48*u, 78*u);
+                      add("SWAP", "KeyQ", w-162*u, h-48*u, 64*u);
+                      add("JUMP", "Space", w-90*u, h-48*u, 72*u);
                   }
-                  closeFullscreenVideo();
-                  if (web != null) {
-                      root.removeView(web);
-                      web.destroy();
+                  void text(Canvas canvas, String label, float x, float y, float size, int color) {
+                      paint.setColor(color); paint.setStyle(Paint.Style.FILL); paint.setTextSize(size*unit);
+                      paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); paint.setTextAlign(Paint.Align.CENTER);
+                      canvas.drawText(label,x,y-(paint.ascent()+paint.descent())/2,paint);
                   }
-                  super.onDestroy();
+                  @Override protected void onDraw(Canvas canvas) {
+                      if (shown) {
+                          paint.setStyle(Paint.Style.FILL); paint.setColor(0x55323C44); canvas.drawCircle(joyX,joyY,radius,paint);
+                          paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(1.3f*unit); paint.setColor(0x99BBE4DD); canvas.drawCircle(joyX,joyY,radius,paint);
+                          paint.setStyle(Paint.Style.FILL); paint.setColor(0xAA80C9BC); canvas.drawCircle(joyX+knobX,joyY+knobY,23*unit,paint);
+                          text(canvas,"MOVE",joyX,joyY+radius+15*unit,10,0xBBDDEDE9);
+                          paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(unit); paint.setColor(0x448AC5BB); canvas.drawRoundRect(look,18*unit,18*unit,paint);
+                          text(canvas,"DRAG TO LOOK",look.centerX(),look.centerY(),11,0x778AD4C6);
+                      }
+                      for (Control control : controls) {
+                          if (!shown && !control.code.equals("menu")) continue;
+                          boolean pressed=false;
+                          for (Touch touch:touches.values()) if (touch.control==control) pressed=true;
+                          paint.setStyle(Paint.Style.FILL); paint.setColor(pressed?0xCC5BACA0:0x99404A50);
+                          canvas.drawRoundRect(control.box,12*unit,12*unit,paint);
+                          paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(unit); paint.setColor(0x8897C7BE);
+                          canvas.drawRoundRect(control.box,12*unit,12*unit,paint);
+                          text(canvas,control.label,control.box.centerX(),control.box.centerY(),control.code.equals("menu")?21:11,0xEEFFFFFF);
+                      }
+                  }
+                  void press(Control control, boolean down) {
+                      if (control.code.equals("menu")) return;
+                      if (control.code.startsWith("mouse")) send("mouse","",down,control.code.equals("mouse2")?2:0,0,0);
+                      else key(control.code,down);
+                  }
+                  void joystick(float x,float y) {
+                      float dx=x-joyX,dy=y-joyY;
+                      float length=(float)Math.hypot(dx,dy), scale=length>radius?radius/length:1;
+                      knobX=dx*scale; knobY=dy*scale;
+                      Set<String> next = new HashSet<>();
+                      if (knobX < -radius*.28f) next.add("KeyA");
+                      if (knobX > radius*.28f) next.add("KeyD");
+                      if (knobY < -radius*.28f) next.add("KeyW");
+                      if (knobY > radius*.28f) next.add("KeyS");
+                      for (String code:movement) if (!next.contains(code)) key(code,false);
+                      for (String code:next) if (!movement.contains(code)) key(code,true);
+                      movement.clear(); movement.addAll(next);
+                  }
+                  boolean hasKind(String kind) { for (Touch t:touches.values()) if (t.kind.equals(kind)) return true; return false; }
+                  void releaseAll() {
+                      touches.clear(); movement.clear(); knobX=knobY=0;
+                      if (web!=null) send("reset","",false,0,0,0);
+                      invalidate();
+                  }
+                  @Override public boolean onTouchEvent(MotionEvent event) {
+                      int action=event.getActionMasked(), index=event.getActionIndex(), id=event.getPointerId(index);
+                      float x=event.getX(index),y=event.getY(index);
+                      if (action==MotionEvent.ACTION_DOWN || action==MotionEvent.ACTION_POINTER_DOWN) {
+                          for (Control control:controls) {
+                              if ((!shown && !control.code.equals("menu")) || !control.box.contains(x,y)) continue;
+                              boolean already=false;
+                              for (Touch touch:touches.values()) if (touch.control==control) already=true;
+                              touches.put(id,new Touch("button",control,x,y));
+                              if (!already) press(control,true);
+                              invalidate(); return true;
+                          }
+                          if (shown && Math.hypot(x-joyX,y-joyY)<radius*1.3f && !hasKind("joy")) {
+                              touches.put(id,new Touch("joy",null,x,y)); joystick(x,y); invalidate(); return true;
+                          }
+                          if (shown && look.contains(x,y) && !hasKind("look")) {
+                              touches.put(id,new Touch("look",null,x,y)); return true;
+                          }
+                          return !touches.isEmpty();
+                      }
+                      if (action==MotionEvent.ACTION_MOVE) {
+                          for (int i=0;i<event.getPointerCount();i++) {
+                              Touch touch=touches.get(event.getPointerId(i)); if (touch==null) continue;
+                              float px=event.getX(i),py=event.getY(i);
+                              if (touch.kind.equals("joy")) joystick(px,py);
+                              if (touch.kind.equals("look")) {
+                                  float gain=new float[]{.65f,1.25f,2.2f}[sensitivityIndex]/unit;
+                                  send("look","",false,0,(px-touch.x)*gain,(py-touch.y)*gain);
+                              }
+                              touch.x=px; touch.y=py;
+                          }
+                          invalidate(); return true;
+                      }
+                      if (action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_POINTER_UP) {
+                          Touch touch=touches.remove(id);
+                          if (touch!=null) {
+                              if (touch.kind.equals("joy")) joystick(joyX,joyY);
+                              if (touch.control!=null) {
+                                  boolean stillHeld=false;
+                                  for (Touch other:touches.values()) if (other.control==touch.control) stillHeld=true;
+                                  if (!stillHeld) press(touch.control,false);
+                                  if (touch.control.code.equals("menu") && touch.control.box.contains(x,y)) settings();
+                              }
+                          }
+                          invalidate(); return true;
+                      }
+                      if (action==MotionEvent.ACTION_CANCEL) { releaseAll(); return true; }
+                      return false;
+                  }
               }
           }
-          EOF
+          VEL_SOURCE_6_END
+          
 
       - name: Build APK
         run: gradle --no-daemon :app:assembleDebug
-
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Vel-Game-APK
+          name: Vel-Controller-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
