@@ -1,4 +1,4 @@
-name: Build controller shared-memory APK
+name: Build controller graphics APK
 
 on:
   push:
@@ -56,11 +56,11 @@ jobs:
               namespace 'com.velgame.mobile'
               compileSdk 35
               defaultConfig {
-                  applicationId 'com.velgame.controller.memory'
+                  applicationId 'com.velgame.controller.graphics'
                   minSdk 24
                   targetSdk 35
-                  versionCode 3
-                  versionName '1.2-memory'
+                  versionCode 4
+                  versionName '1.3-graphics'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -73,7 +73,7 @@ jobs:
           cat > 'app/src/main/AndroidManifest.xml' <<'VEL_SOURCE_4_END'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
-              <application android:label="Vel Controller 2" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:hardwareAccelerated="true">
+              <application android:label="Vel Controller 3" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:hardwareAccelerated="true">
                   <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -87,6 +87,8 @@ jobs:
           cat > 'app/src/main/assets/controller.js' <<'VEL_SOURCE_5_END'
           (() => {
             if (window.__velController) return;
+            // Use the audited WebGL2 buffer-backed renderer, including its GLSL pack.
+            try { sessionStorage.setItem('kisak-renderer', 'webgl2'); } catch (_) {}
             const set = (object, name, value) => {
               try { Object.defineProperty(object, name, {configurable: true, get: () => value}); } catch (_) {}
             };
@@ -200,7 +202,78 @@ jobs:
           })();
           VEL_SOURCE_5_END
           
-          cat > 'app/src/main/java/com/velgame/mobile/MainActivity.java' <<'VEL_SOURCE_6_END'
+          cat > 'app/src/main/assets/graphics-probe.js' <<'VEL_SOURCE_6_END'
+          // Run on the game's disposable capability contexts, including its worker.
+          // This exercises real uniform-buffer compilation, upload and rendering.
+          function velCheckUniformBuffers(gl) {
+            const fail = message => ({kind: 'gpu', message: 'Mobile buffer test: ' + message});
+            const limits = [
+              ['MAX_UNIFORM_BLOCK_SIZE', 4096], ['MAX_UNIFORM_BUFFER_BINDINGS', 2],
+              ['MAX_VERTEX_UNIFORM_BLOCKS', 1], ['MAX_FRAGMENT_UNIFORM_BLOCKS', 1],
+              ['MAX_COMBINED_UNIFORM_BLOCKS', 2]
+            ];
+            for (const [name, minimum] of limits) {
+              if (gl.getParameter(gl[name]) < minimum) return fail(name + ' must be at least ' + minimum);
+            }
+            const shaders = [], buffers = [];
+            let program;
+            try {
+              const vertex = `#version 300 es
+          precision highp float;
+          layout(std140) uniform VelVertex { vec4 v[256]; };
+          void main() {
+            vec2 p = gl_VertexID == 0 ? vec2(-1., -1.) : (gl_VertexID == 1 ? vec2(3., -1.) : vec2(-1., 3.));
+            gl_Position = vec4(p + v[255].xy, 0., 1.);
+          }`;
+              const fragment = `#version 300 es
+          precision highp float;
+          layout(std140) uniform VelFragment { vec4 f[256]; };
+          out vec4 color;
+          void main() { color = f[255]; }`;
+              program = gl.createProgram();
+              for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
+                const shader = gl.createShader(type);
+                shaders.push(shader);
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) return fail(gl.getShaderInfoLog(shader) || 'shader compilation failed');
+                gl.attachShader(program, shader);
+              }
+              gl.linkProgram(program);
+              if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return fail(gl.getProgramInfoLog(program) || 'shader linking failed');
+              gl.useProgram(program);
+              for (let binding = 0; binding < 2; binding++) {
+                const buffer = gl.createBuffer();
+                buffers.push(buffer);
+                const data = new Float32Array(1024);
+                if (binding === 1) data.set([0.25, 0.5, 0.75, 1], 1020);
+                gl.bindBuffer(gl.UNIFORM_BUFFER, buffer);
+                gl.bufferData(gl.UNIFORM_BUFFER, data, gl.STATIC_DRAW);
+                const block = gl.getUniformBlockIndex(program, binding ? 'VelFragment' : 'VelVertex');
+                if (block === gl.INVALID_INDEX) return fail('uniform block missing');
+                gl.uniformBlockBinding(program, block, binding);
+                gl.bindBufferBase(gl.UNIFORM_BUFFER, binding, buffer);
+              }
+              gl.disable(gl.DITHER);
+              gl.viewport(0, 0, 1, 1);
+              gl.drawArrays(gl.TRIANGLES, 0, 3);
+              const pixel = new Uint8Array(4);
+              gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+              if (gl.getError() !== gl.NO_ERROR) return fail('buffer rendering produced a graphics error');
+              if ([64,128,191,255].some((expected,index) => Math.abs(expected-pixel[index]) > 2))
+                return fail('buffer rendering returned an incorrect pixel');
+              return null;
+            } catch (error) { return fail(error.message); }
+            finally {
+              gl.useProgram(null);
+              for (const shader of shaders) gl.deleteShader(shader);
+              if (program) gl.deleteProgram(program);
+              for (const buffer of buffers) gl.deleteBuffer(buffer);
+            }
+          }
+          VEL_SOURCE_6_END
+          
+          cat > 'app/src/main/java/com/velgame/mobile/MainActivity.java' <<'VEL_SOURCE_7_END'
           package com.velgame.mobile;
           
           import android.app.Activity;
@@ -228,6 +301,9 @@ jobs:
               private boolean earlyScript;
               private boolean sharedMemoryEnabled;
               private String sharedMemoryStatus = "Shared-memory support unavailable";
+              private String graphicsProbe;
+              private volatile String graphicsStatus = "Waiting for game graphics checks";
+              private boolean graphicsErrorShown;
           
               @Override public void onCreate(Bundle state) {
                   super.onCreate(state);
@@ -267,6 +343,12 @@ jobs:
                       while ((count = stream.read(bytes)) != -1) buffer.write(bytes, 0, count);
                       bridge = buffer.toString("UTF-8");
                   } catch (IOException e) { throw new IllegalStateException(e); }
+                  try (InputStream stream = getAssets().open("graphics-probe.js")) {
+                      ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                      byte[] bytes = new byte[4096]; int count;
+                      while ((count=stream.read(bytes))!=-1) buffer.write(bytes,0,count);
+                      graphicsProbe=buffer.toString("UTF-8");
+                  } catch (IOException e) { throw new IllegalStateException(e); }
           
                   earlyScript = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT);
                   if (earlyScript) WebViewCompat.addDocumentStartJavaScript(web, bridge, Collections.singleton("https://vel.gg"));
@@ -274,6 +356,10 @@ jobs:
                   root.addView(controller, new FrameLayout.LayoutParams(-1, -1));
                   web.setWebViewClient(new WebViewClient() {
                       @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                          String path=request.getUrl().getPath();
+                          if ("GET".equals(request.getMethod()) && isGameOrigin(request.getUrl())
+                                  && ("/bo1z/capabilities.js".equals(path) || "/bo1z/artifacts/KisakBlack-web.wasm".equals(path)))
+                              return graphicsResource(request);
                           if (sharedMemoryEnabled && request.isForMainFrame() && "GET".equals(request.getMethod())
                                   && isGameOrigin(request.getUrl())) return isolatedDocument(request);
                           return null;
@@ -321,6 +407,51 @@ jobs:
                   if (!earlyScript) new AlertDialog.Builder(this).setTitle("Update Android System WebView")
                       .setMessage("Update Android System WebView in the Play Store, then reopen Vel Game. This device cannot yet apply desktop compatibility before the game starts.")
                       .setPositiveButton("OK", null).show();
+              }
+          
+              private WebResourceResponse graphicsResource(WebResourceRequest request) {
+                  java.net.HttpURLConnection connection=null;
+                  try {
+                      connection=(java.net.HttpURLConnection)new java.net.URL(request.getUrl().toString()).openConnection();
+                      connection.setInstanceFollowRedirects(false);
+                      connection.setConnectTimeout(15000);connection.setReadTimeout(60000);
+                      connection.setRequestProperty("Accept-Encoding","identity");
+                      connection.setRequestProperty("Cache-Control","no-cache");
+                      int status=connection.getResponseCode();
+                      if(status!=200) throw new IOException("Game graphics download returned HTTP "+status);
+                      ByteArrayOutputStream buffer=new ByteArrayOutputStream();
+                      try(InputStream input=connection.getInputStream()) {
+                          byte[] chunk=new byte[32768];int count;
+                          while((count=input.read(chunk))!=-1) {
+                              if(buffer.size()+count>32*1024*1024) throw new IOException("Game graphics download exceeded expected size");
+                              buffer.write(chunk,0,count);
+                          }
+                      }
+                      boolean wasm=request.getUrl().getPath().endsWith(".wasm");
+                      byte[] data=GraphicsCompatibility.patch(buffer.toByteArray(),wasm,graphicsProbe);
+                      Map<String,String> headers=new HashMap<>();
+                      for(Map.Entry<String,List<String>> header:connection.getHeaderFields().entrySet()) {
+                          String name=header.getKey();
+                          if(name!=null && !name.equalsIgnoreCase("Content-Length") && !name.equalsIgnoreCase("Content-Encoding")
+                                  && !name.equalsIgnoreCase("ETag") && !name.equalsIgnoreCase("Content-MD5") && !name.equalsIgnoreCase("Cache-Control"))
+                              headers.put(name,String.join(", ",header.getValue()));
+                      }
+                      headers.put("Cache-Control","no-store");
+                      graphicsStatus=wasm?"Audited engine graphics checks adapted to uniform buffers":"Audited graphics checks loaded; device buffer test will run";
+                      return new WebResourceResponse(wasm?"application/wasm":"text/javascript",wasm?null:"UTF-8",200,"OK",headers,new ByteArrayInputStream(data));
+                  } catch(Exception error) {
+                      graphicsStatus=error.getMessage()==null?error.getClass().getSimpleName():error.getMessage();
+                      runOnUiThread(() -> {
+                          if(!isFinishing() && !isDestroyed() && !graphicsErrorShown) {
+                              graphicsErrorShown=true;
+                              new AlertDialog.Builder(this).setTitle("Graphics compatibility stopped")
+                                  .setMessage(graphicsStatus+"\n\nOpen Browser diagnostics to see the details.")
+                                  .setPositiveButton("OK",null).show();
+                          }
+                      });
+                      return new WebResourceResponse("text/plain","UTF-8",503,"Compatibility check failed",
+                          Collections.singletonMap("Cache-Control","no-store"),new ByteArrayInputStream(graphicsStatus.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                  } finally {if(connection!=null)connection.disconnect();}
               }
           
               private boolean isGameOrigin(android.net.Uri uri) {
@@ -383,10 +514,10 @@ jobs:
               }
               private void diagnostics() {
                   controller.releaseAll();
-                  String js = "JSON.stringify({origin:location.origin,isolated:crossOriginIsolated,sharedMemory:typeof SharedArrayBuffer!=='undefined',wasmJSPI:typeof WebAssembly.Suspending==='function',storage:!!navigator.storage?.getDirectory,workers:typeof Worker!=='undefined'})";
+                  String js = "(()=>{const c=document.createElement('canvas'),g=c.getContext('webgl2');const info={origin:location.origin,isolated:crossOriginIsolated,sharedMemory:typeof SharedArrayBuffer!=='undefined',wasmJSPI:typeof WebAssembly.Suspending==='function',vertexUniforms:g?.getParameter(g.MAX_VERTEX_UNIFORM_VECTORS),fragmentUniforms:g?.getParameter(g.MAX_FRAGMENT_UNIFORM_VECTORS),uniformBufferBytes:g?.getParameter(g.MAX_UNIFORM_BLOCK_SIZE)};g?.getExtension('WEBGL_lose_context')?.loseContext();return JSON.stringify(info)})()";
                   web.evaluateJavascript(js, value -> {
                       android.content.pm.PackageInfo provider = WebViewCompat.getCurrentWebViewPackage(this);
-                      String details = "Vel Controller 2 (1.2)\n" + sharedMemoryStatus + "\nWebView: "
+                      String details = "Vel Controller 3 (1.3)\n" + sharedMemoryStatus + "\n"+graphicsStatus+"\nWebView: "
                           + (provider == null ? "unknown" : provider.versionName) + "\n\n" + value;
                       new AlertDialog.Builder(this).setTitle("Browser diagnostics").setMessage(details).setPositiveButton("OK", null).show();
                   });
@@ -598,7 +729,69 @@ jobs:
                   }
               }
           }
-          VEL_SOURCE_6_END
+          VEL_SOURCE_7_END
+          
+          cat > 'app/src/main/java/com/velgame/mobile/GraphicsCompatibility.java' <<'VEL_SOURCE_8_END'
+          package com.velgame.mobile;
+          
+          import java.nio.charset.StandardCharsets;
+          import java.security.MessageDigest;
+          
+          /** Targeted adaptation of the audited, buffer-backed October 8 renderer. */
+          public final class GraphicsCompatibility {
+              public static final String ENGINE_SHA = "61192df377020627f52fa7e9fd28047bd53662aa46e5e3cd6e7fad0c5c35cc98";
+              public static final String CAPS_SHA = "a3fa06776c28a1c4e17fee5660b0c754ccc947813adcf70053483de9cfffa374";
+              public static String sha256(byte[] bytes) throws Exception {
+                  byte[] hash = MessageDigest.getInstance("SHA-256").digest(bytes);
+                  StringBuilder result = new StringBuilder();
+                  for (byte value : hash) result.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+                  return result.toString();
+              }
+              public static byte[] patch(byte[] original, boolean wasm, String probe) throws Exception {
+                  if (!sha256(original).equals(wasm ? ENGINE_SHA : CAPS_SHA))
+                      throw new IllegalStateException("The website updated its " + (wasm ? "engine" : "graphics checks") + ". This compatibility patch must be reviewed for the new version.");
+                  if (!wasm) {
+                      String source = new String(original, StandardCharsets.UTF_8);
+                      source = replaceOnce(source, "['MAX_VERTEX_UNIFORM_VECTORS', 264]", "['MAX_VERTEX_UNIFORM_VECTORS', 256]");
+                      source = replaceOnce(source, "['MAX_FRAGMENT_UNIFORM_VECTORS', 264]", "['MAX_FRAGMENT_UNIFORM_VECTORS', 256]");
+                      source = replaceOnce(source, "  const missing = [];", "  const bufferFailure = velCheckUniformBuffers(gl);\n  if (bufferFailure) return bufferFailure;\n  const missing = [];");
+                      return (source + "\n" + probe).getBytes(StandardCharsets.UTF_8);
+                  }
+                  byte[] result = original.clone();
+                  // QueryCaps: constants now use UBOs, so do not reserve 8 default-uniform
+                  // vectors from the D3D logical 256-constant capacity.
+                  edit(result, 0x189e8e, new int[]{0x41,0x08,0x6b}, new int[]{0x41,0x00,0x6b});
+                  // QueryCaps fragment check: require >= 256 rather than >= 264.
+                  edit(result, 0x189ed4, new int[]{0x41,0x88,0x02,0x48}, new int[]{0x41,0x80,0x02,0x48});
+                  // R_CheckDxCaps: require > 255 rather than > 263 for both stages.
+                  edit(result, 0x27192b, new int[]{0x41,0x87,0x02,0x4a}, new int[]{0x41,0xff,0x01,0x4a});
+                  edit(result, 0x271955, new int[]{0x41,0x87,0x02,0x4a}, new int[]{0x41,0xff,0x01,0x4a});
+                  replaceLabel(result, "MAX_VERTEX_UNIFORM_VECTORS >= 264", "MAX_VERTEX_UNIFORM_VECTORS >= 256");
+                  replaceLabel(result, "MAX_FRAGMENT_UNIFORM_VECTORS >= 264", "MAX_FRAGMENT_UNIFORM_VECTORS >= 256");
+                  return result;
+              }
+              private static String replaceOnce(String text, String old, String replacement) {
+                  int at = text.indexOf(old);
+                  if (at < 0 || text.indexOf(old, at+old.length()) >= 0) throw new IllegalStateException("Graphics patch signature mismatch");
+                  return text.substring(0,at) + replacement + text.substring(at+old.length());
+              }
+              private static void edit(byte[] bytes, int at, int[] before, int[] after) {
+                  for (int i=0;i<before.length;i++) if ((bytes[at+i]&255)!=before[i]) throw new IllegalStateException("Engine patch signature mismatch");
+                  for (int i=0;i<after.length;i++) bytes[at+i]=(byte)after[i];
+              }
+              private static void replaceLabel(byte[] bytes, String before, String after) {
+                  byte[] old = before.getBytes(StandardCharsets.US_ASCII), next = after.getBytes(StandardCharsets.US_ASCII);
+                  int found=-1;
+                  for (int i=0;i<=bytes.length-old.length;i++) {
+                      boolean same=true;
+                      for (int j=0;j<old.length;j++) if (bytes[i+j]!=old[j]) {same=false;break;}
+                      if (same) { if(found>=0)throw new IllegalStateException("Ambiguous engine label");found=i; }
+                  }
+                  if(found<0 || old.length!=next.length)throw new IllegalStateException("Missing engine label");
+                  System.arraycopy(next,0,bytes,found,next.length);
+              }
+          }
+          VEL_SOURCE_8_END
           
 
       - name: Build APK
@@ -606,6 +799,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Vel-Controller-2-APK
+          name: Vel-Controller-3-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
