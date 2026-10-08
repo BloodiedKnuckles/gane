@@ -1,4 +1,4 @@
-name: Build controller graphics APK
+name: Build original-resolution controller APK
 
 on:
   push:
@@ -32,35 +32,31 @@ jobs:
         shell: bash
         run: |
           mkdir -p app/src/main/java/com/velgame/mobile app/src/main/assets
-          
           cat > 'settings.gradle' <<'VEL_SOURCE_0_END'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
           rootProject.name = 'VelGame'
           include ':app'
           VEL_SOURCE_0_END
-          
           cat > 'build.gradle' <<'VEL_SOURCE_1_END'
           plugins {
               id 'com.android.application' version '8.7.3' apply false
           }
           VEL_SOURCE_1_END
-          
           cat > 'gradle.properties' <<'VEL_SOURCE_2_END'
           android.useAndroidX=true
           VEL_SOURCE_2_END
-          
           cat > 'app/build.gradle' <<'VEL_SOURCE_3_END'
           plugins { id 'com.android.application' }
           android {
               namespace 'com.velgame.mobile'
               compileSdk 35
               defaultConfig {
-                  applicationId 'com.velgame.controller.graphics'
+                  applicationId 'com.velgame.controller.fullres'
                   minSdk 24
                   targetSdk 35
-                  versionCode 4
-                  versionName '1.3-graphics'
+                  versionCode 6
+                  versionName '1.5-fullres'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -69,11 +65,10 @@ jobs:
           }
           dependencies { implementation 'androidx.webkit:webkit:1.18.0-rc01' }
           VEL_SOURCE_3_END
-          
           cat > 'app/src/main/AndroidManifest.xml' <<'VEL_SOURCE_4_END'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
-              <application android:label="Vel Controller 3" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:hardwareAccelerated="true">
+              <application android:label="Vel Controller 5" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:hardwareAccelerated="true">
                   <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -83,7 +78,6 @@ jobs:
               </application>
           </manifest>
           VEL_SOURCE_4_END
-          
           cat > 'app/src/main/assets/controller.js' <<'VEL_SOURCE_5_END'
           (() => {
             if (window.__velController) return;
@@ -137,7 +131,7 @@ jobs:
             const codes = {
               KeyW: ['w',87], KeyA: ['a',65], KeyS: ['s',83], KeyD: ['d',68],
               KeyR: ['r',82], KeyE: ['e',69], KeyF: ['f',70], KeyC: ['c',67],
-              KeyQ: ['q',81], Space: [' ',32], ShiftLeft: ['Shift',16],
+              KeyQ: ['q',81], KeyV: ['v',86], Space: [' ',32], ShiftLeft: ['Shift',16],
               ControlLeft: ['Control',17], Escape: ['Escape',27], Enter: ['Enter',13],
               Digit1: ['1',49], Digit2: ['2',50]
             };
@@ -201,7 +195,6 @@ jobs:
             setInterval(() => [...held].forEach(code => key(code, true, true)), 85);
           })();
           VEL_SOURCE_5_END
-          
           cat > 'app/src/main/assets/graphics-probe.js' <<'VEL_SOURCE_6_END'
           // Run on the game's disposable capability contexts, including its worker.
           // This exercises real uniform-buffer compilation, upload and rendering.
@@ -272,8 +265,108 @@ jobs:
             }
           }
           VEL_SOURCE_6_END
+          cat > 'app/src/main/java/com/velgame/mobile/ControllerInput.java' <<'VEL_SOURCE_7_END'
+          package com.velgame.mobile;
+          import java.util.LinkedHashSet;
+          import java.util.Set;
           
-          cat > 'app/src/main/java/com/velgame/mobile/MainActivity.java' <<'VEL_SOURCE_7_END'
+          public final class ControllerInput {
+              // Normalized stick coordinates; sprint hysteresis avoids repeated toggles
+              // near the edge. Defaults verified in the original game's embedded config.
+              public static Set<String> movement(float x, float y, boolean autoSprint, boolean wasSprinting) {
+                  Set<String> keys = new LinkedHashSet<>();
+                  if (x < -.28f) keys.add("KeyA");
+                  if (x > .28f) keys.add("KeyD");
+                  if (y < -.28f) keys.add("KeyW");
+                  if (y > .28f) keys.add("KeyS");
+                  float threshold=wasSprinting?.62f:.82f;
+                  if (autoSprint && y<-.45f && Math.hypot(x,y)>=threshold) keys.add("ShiftLeft");
+                  return keys;
+              }
+          }
+          VEL_SOURCE_7_END
+          cat > 'app/src/main/java/com/velgame/mobile/EffectsCompatibility.java' <<'VEL_SOURCE_8_END'
+          package com.velgame.mobile;
+          import java.nio.charset.StandardCharsets;
+          /** Only verified graphics dvars; the original canvas module is never intercepted. */
+          public final class EffectsCompatibility {
+              public static byte[] patch(byte[] original, boolean reduced) throws Exception {
+                  if (!GraphicsCompatibility.sha256(original).equals("d0296c4b2bd78e83709c9a3533ea191af936b13c49ce8142a5c877c20b8c07af"))
+                      throw new IllegalStateException("The website updated its engine launcher. The effects patch needs review.");
+                  String source=new String(original,StandardCharsets.UTF_8);
+                  String before="const args = [...fiveArguments];";
+                  int at=source.indexOf(before);
+                  if(at<0 || source.indexOf(before,at+before.length())>=0)
+                      throw new IllegalStateException("Effects patch signature mismatch");
+                  // Explicitly restore defaults in original mode, including saved dvars.
+                  String value=reduced?"0":"1";
+                  String after=before+"\n    args.splice(args.indexOf('+devmap'), 0, '+set', 'sm_enable', '"+value+"', '+set', 'r_envMapSpecular', '"+value+"', '+set', 'r_distortion', '"+value+"');";
+                  return (source.substring(0,at)+after+source.substring(at+before.length())).getBytes(StandardCharsets.UTF_8);
+              }
+          }
+          VEL_SOURCE_8_END
+          cat > 'app/src/main/java/com/velgame/mobile/GraphicsCompatibility.java' <<'VEL_SOURCE_9_END'
+          package com.velgame.mobile;
+          
+          import java.nio.charset.StandardCharsets;
+          import java.security.MessageDigest;
+          
+          /** Targeted adaptation of the audited, buffer-backed October 8 renderer. */
+          public final class GraphicsCompatibility {
+              public static final String ENGINE_SHA = "61192df377020627f52fa7e9fd28047bd53662aa46e5e3cd6e7fad0c5c35cc98";
+              public static final String CAPS_SHA = "a3fa06776c28a1c4e17fee5660b0c754ccc947813adcf70053483de9cfffa374";
+              public static String sha256(byte[] bytes) throws Exception {
+                  byte[] hash = MessageDigest.getInstance("SHA-256").digest(bytes);
+                  StringBuilder result = new StringBuilder();
+                  for (byte value : hash) result.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+                  return result.toString();
+              }
+              public static byte[] patch(byte[] original, boolean wasm, String probe) throws Exception {
+                  if (!sha256(original).equals(wasm ? ENGINE_SHA : CAPS_SHA))
+                      throw new IllegalStateException("The website updated its " + (wasm ? "engine" : "graphics checks") + ". This compatibility patch must be reviewed for the new version.");
+                  if (!wasm) {
+                      String source = new String(original, StandardCharsets.UTF_8);
+                      source = replaceOnce(source, "['MAX_VERTEX_UNIFORM_VECTORS', 264]", "['MAX_VERTEX_UNIFORM_VECTORS', 256]");
+                      source = replaceOnce(source, "['MAX_FRAGMENT_UNIFORM_VECTORS', 264]", "['MAX_FRAGMENT_UNIFORM_VECTORS', 256]");
+                      source = replaceOnce(source, "  const missing = [];", "  const bufferFailure = velCheckUniformBuffers(gl);\n  if (bufferFailure) return bufferFailure;\n  const missing = [];");
+                      return (source + "\n" + probe).getBytes(StandardCharsets.UTF_8);
+                  }
+                  byte[] result = original.clone();
+                  // QueryCaps: constants now use UBOs, so do not reserve 8 default-uniform
+                  // vectors from the D3D logical 256-constant capacity.
+                  edit(result, 0x189e8e, new int[]{0x41,0x08,0x6b}, new int[]{0x41,0x00,0x6b});
+                  // QueryCaps fragment check: require >= 256 rather than >= 264.
+                  edit(result, 0x189ed4, new int[]{0x41,0x88,0x02,0x48}, new int[]{0x41,0x80,0x02,0x48});
+                  // R_CheckDxCaps: require > 255 rather than > 263 for both stages.
+                  edit(result, 0x27192b, new int[]{0x41,0x87,0x02,0x4a}, new int[]{0x41,0xff,0x01,0x4a});
+                  edit(result, 0x271955, new int[]{0x41,0x87,0x02,0x4a}, new int[]{0x41,0xff,0x01,0x4a});
+                  replaceLabel(result, "MAX_VERTEX_UNIFORM_VECTORS >= 264", "MAX_VERTEX_UNIFORM_VECTORS >= 256");
+                  replaceLabel(result, "MAX_FRAGMENT_UNIFORM_VECTORS >= 264", "MAX_FRAGMENT_UNIFORM_VECTORS >= 256");
+                  return result;
+              }
+              private static String replaceOnce(String text, String old, String replacement) {
+                  int at = text.indexOf(old);
+                  if (at < 0 || text.indexOf(old, at+old.length()) >= 0) throw new IllegalStateException("Graphics patch signature mismatch");
+                  return text.substring(0,at) + replacement + text.substring(at+old.length());
+              }
+              private static void edit(byte[] bytes, int at, int[] before, int[] after) {
+                  for (int i=0;i<before.length;i++) if ((bytes[at+i]&255)!=before[i]) throw new IllegalStateException("Engine patch signature mismatch");
+                  for (int i=0;i<after.length;i++) bytes[at+i]=(byte)after[i];
+              }
+              private static void replaceLabel(byte[] bytes, String before, String after) {
+                  byte[] old = before.getBytes(StandardCharsets.US_ASCII), next = after.getBytes(StandardCharsets.US_ASCII);
+                  int found=-1;
+                  for (int i=0;i<=bytes.length-old.length;i++) {
+                      boolean same=true;
+                      for (int j=0;j<old.length;j++) if (bytes[i+j]!=old[j]) {same=false;break;}
+                      if (same) { if(found>=0)throw new IllegalStateException("Ambiguous engine label");found=i; }
+                  }
+                  if(found<0 || old.length!=next.length)throw new IllegalStateException("Missing engine label");
+                  System.arraycopy(next,0,bytes,found,next.length);
+              }
+          }
+          VEL_SOURCE_9_END
+          cat > 'app/src/main/java/com/velgame/mobile/MainActivity.java' <<'VEL_SOURCE_10_END'
           package com.velgame.mobile;
           
           import android.app.Activity;
@@ -304,9 +397,25 @@ jobs:
               private String graphicsProbe;
               private volatile String graphicsStatus = "Waiting for game graphics checks";
               private boolean graphicsErrorShown;
+              private volatile int performanceMode;
+              private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
+              private boolean paused;
+              private final Runnable readGameState = new Runnable() {
+                  @Override public void run() {
+                      if (paused || web == null || isDestroyed()) return;
+                      web.evaluateJavascript("Boolean(window.five && window.five.screen === 'playing' && !(window.five.uiState & 1))", value -> {
+                          if (paused || isDestroyed() || controller == null) return;
+                          boolean playing="true".equals(value);
+                          if (controller.gamePlaying && !playing) controller.releaseAll();
+                          if (controller.gamePlaying!=playing) { controller.gamePlaying=playing; controller.invalidate(); }
+                      });
+                      ui.postDelayed(this, 500);
+                  }
+              };
           
               @Override public void onCreate(Bundle state) {
                   super.onCreate(state);
+                  performanceMode=Math.max(0,Math.min(1,getPreferences(0).getInt("performanceMode",0)));
                   getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                   root = new FrameLayout(this);
                   setContentView(root);
@@ -349,7 +458,6 @@ jobs:
                       while ((count=stream.read(bytes))!=-1) buffer.write(bytes,0,count);
                       graphicsProbe=buffer.toString("UTF-8");
                   } catch (IOException e) { throw new IllegalStateException(e); }
-          
                   earlyScript = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT);
                   if (earlyScript) WebViewCompat.addDocumentStartJavaScript(web, bridge, Collections.singleton("https://vel.gg"));
                   controller = new Controller();
@@ -358,7 +466,7 @@ jobs:
                       @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                           String path=request.getUrl().getPath();
                           if ("GET".equals(request.getMethod()) && isGameOrigin(request.getUrl())
-                                  && ("/bo1z/capabilities.js".equals(path) || "/bo1z/artifacts/KisakBlack-web.wasm".equals(path)))
+                                  && ("/bo1z/capabilities.js".equals(path) || "/bo1z/artifacts/KisakBlack-web.wasm".equals(path) || "/bo1z/engine.js".equals(path)))
                               return graphicsResource(request);
                           if (sharedMemoryEnabled && request.isForMainFrame() && "GET".equals(request.getMethod())
                                   && isGameOrigin(request.getUrl())) return isolatedDocument(request);
@@ -428,7 +536,9 @@ jobs:
                           }
                       }
                       boolean wasm=request.getUrl().getPath().endsWith(".wasm");
-                      byte[] data=GraphicsCompatibility.patch(buffer.toByteArray(),wasm,graphicsProbe);
+                      boolean engineModule="/bo1z/engine.js".equals(request.getUrl().getPath());
+                      byte[] data=engineModule ? EffectsCompatibility.patch(buffer.toByteArray(),performanceMode==0)
+                          : GraphicsCompatibility.patch(buffer.toByteArray(),wasm,graphicsProbe);
                       Map<String,String> headers=new HashMap<>();
                       for(Map.Entry<String,List<String>> header:connection.getHeaderFields().entrySet()) {
                           String name=header.getKey();
@@ -437,7 +547,7 @@ jobs:
                               headers.put(name,String.join(", ",header.getValue()));
                       }
                       headers.put("Cache-Control","no-store");
-                      graphicsStatus=wasm?"Audited engine graphics checks adapted to uniform buffers":"Audited graphics checks loaded; device buffer test will run";
+                      if(!engineModule)graphicsStatus=wasm?"Audited engine graphics checks adapted to uniform buffers":"Audited graphics checks loaded; device buffer test will run";
                       return new WebResourceResponse(wasm?"application/wasm":"text/javascript",wasm?null:"UTF-8",200,"OK",headers,new ByteArrayInputStream(data));
                   } catch(Exception error) {
                       graphicsStatus=error.getMessage()==null?error.getClass().getSimpleName():error.getMessage();
@@ -517,7 +627,7 @@ jobs:
                   String js = "(()=>{const c=document.createElement('canvas'),g=c.getContext('webgl2');const info={origin:location.origin,isolated:crossOriginIsolated,sharedMemory:typeof SharedArrayBuffer!=='undefined',wasmJSPI:typeof WebAssembly.Suspending==='function',vertexUniforms:g?.getParameter(g.MAX_VERTEX_UNIFORM_VECTORS),fragmentUniforms:g?.getParameter(g.MAX_FRAGMENT_UNIFORM_VECTORS),uniformBufferBytes:g?.getParameter(g.MAX_UNIFORM_BLOCK_SIZE)};g?.getExtension('WEBGL_lose_context')?.loseContext();return JSON.stringify(info)})()";
                   web.evaluateJavascript(js, value -> {
                       android.content.pm.PackageInfo provider = WebViewCompat.getCurrentWebViewPackage(this);
-                      String details = "Vel Controller 3 (1.3)\n" + sharedMemoryStatus + "\n"+graphicsStatus+"\nWebView: "
+                      String details = "Vel Controller 5 (1.5) • Original resolution • "+(performanceMode==0?"Reduced effects":"Original effects")+"\n" + sharedMemoryStatus + "\n"+graphicsStatus+"\nWebView: "
                           + (provider == null ? "unknown" : provider.versionName) + "\n\n" + value;
                       new AlertDialog.Builder(this).setTitle("Browser diagnostics").setMessage(details).setPositiveButton("OK", null).show();
                   });
@@ -555,7 +665,7 @@ jobs:
               }
               private void settings() {
                   controller.releaseAll();
-                  String[] options = {controller.shown ? "Hide controls (touch game menus)" : "Show controls", "Look sensitivity", "Reload original link", "Controller help", "Browser diagnostics"};
+                  String[] options = {controller.shown ? "Hide controls (touch game menus)" : "Show controls", "Look sensitivity", "Reload original link", "Controller help", "Browser diagnostics", "Graphics effects"};
                   new AlertDialog.Builder(this).setTitle("Vel controller").setItems(options, (d, which) -> {
                       if (which == 0) { controller.shown = !controller.shown; controller.invalidate(); }
                       if (which == 1) new AlertDialog.Builder(this).setTitle("Look sensitivity")
@@ -566,8 +676,19 @@ jobs:
                           }).setNegativeButton("Close", null).show();
                       if (which == 2) web.loadUrl(URL);
                       if (which == 4) diagnostics();
+                      if (which == 5) new AlertDialog.Builder(this).setTitle("Graphics effects — original resolution")
+                          .setSingleChoiceItems(new String[]{"Reduced effects (recommended)", "Original effects"},performanceMode,(dialog,index)->{
+                              dialog.dismiss();
+                              if(index==performanceMode)return;
+                              new AlertDialog.Builder(this).setTitle("Restart the game?")
+                                  .setMessage("Changing effects reloads this map and ends the current run. Resolution stays at the game’s original setting.")
+                                  .setPositiveButton("Apply and restart",(confirm,button)->{
+                                      performanceMode=index;getPreferences(0).edit().putInt("performanceMode",index).apply();
+                                      controller.releaseAll();web.reload();
+                                  }).setNegativeButton("Cancel",null).show();
+                          }).setNegativeButton("Close",null).show();
                       if (which == 3) new AlertDialog.Builder(this).setTitle("Controls")
-                          .setMessage("Left stick: WASD\nRight pad: mouse look\nFIRE / AIM: mouse buttons\nRUN: Shift • JUMP: Space\nUSE: E • RELOAD: R • MELEE: F\nCROUCH: Ctrl • SWAP: Q\nENTER: confirm • ESC: pause\n\nHold buttons as needed. Use several fingers to move, look and fire together. Hide controls to tap game menus.\n\nThese are standard mappings; this game's exact bindings are unverified. Desktop mode and mouse capture are compatibility shims, not a guarantee that the game runs on Android.")
+                          .setMessage("Left stick: move; push toward the forward edge to sprint. AUTO RUN toggles automatic sprint.\nDrag anywhere outside the buttons and joystick to look while playing. Menu screens still accept normal taps.\n\nUSE: F • MELEE: V • CROUCH: C\nSWAP: 1 • RELOAD: R • JUMP: Space\nFIRE / AIM: mouse buttons\nESC: pause • ENTER: confirm\n\nOriginal game resolution is preserved. Reduced effects disables shadows, environment specular effects, and distortion. Use Graphics effects to compare.")
                           .setPositiveButton("OK", null).show();
                   }).show();
               }
@@ -575,10 +696,11 @@ jobs:
                   super.onWindowFocusChanged(focus);
                   if (focus) immersive(); else if (controller != null) controller.releaseAll();
               }
-              @Override protected void onPause() { if (controller != null) controller.releaseAll(); if (web != null) web.onPause(); super.onPause(); }
-              @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); }
+              @Override protected void onPause() { paused=true;ui.removeCallbacks(readGameState);if (controller != null) controller.releaseAll(); if (web != null) web.onPause(); super.onPause(); }
+              @Override protected void onResume() { super.onResume();paused=false;if (web != null) web.onResume();ui.removeCallbacks(readGameState);ui.post(readGameState); }
               @Override public void onBackPressed() { if (customView != null) closeCustomView(); else settings(); }
               @Override protected void onDestroy() {
+                  paused=true;ui.removeCallbacksAndMessages(null);
                   if (errorDialog != null) errorDialog.dismiss();
                   closeCustomView();
                   root.removeView(web); web.destroy(); super.onDestroy();
@@ -593,6 +715,15 @@ jobs:
                   float unit, joyX, joyY, radius, knobX, knobY;
                   RectF look = new RectF();
                   boolean shown = true;
+                  boolean gamePlaying;
+                  boolean autoSprint=getPreferences(0).getBoolean("autoSprint",true);
+                  float pendingLookX,pendingLookY;
+                  boolean lookQueued;
+                  final Runnable flushLook=()->{
+                      lookQueued=false;
+                      float dx=pendingLookX,dy=pendingLookY;pendingLookX=pendingLookY=0;
+                      if(dx!=0 || dy!=0)send("look","",false,0,dx,dy);
+                  };
                   int sensitivityIndex = Math.max(0, Math.min(2, getPreferences(0).getInt("sensitivity", 1)));
                   Controller() { super(MainActivity.this); setContentDescription("Touch game controller"); setFocusable(false); }
                   class Control {
@@ -619,14 +750,14 @@ jobs:
                       add("☰", "menu", w/2-23*u, 12*u, 46*u);
                       add("ESC", "Escape", 18*u, 12*u, 60*u);
                       add("ENTER", "Enter", 86*u, 12*u, 70*u);
-                      add("RUN", "ShiftLeft", 18*u, h-196*u, 67*u);
-                      add("CROUCH", "ControlLeft", 93*u, h-196*u, 78*u);
-                      add("USE", "KeyE", w-322*u, h-94*u, 66*u);
+                      add("AUTO RUN", "autoSprint", 18*u, h-196*u, 78*u);
+                      add("CROUCH", "KeyC", 104*u, h-196*u, 78*u);
+                      add("USE", "KeyF", w-322*u, h-94*u, 66*u);
                       add("RELOAD", "KeyR", w-248*u, h-94*u, 78*u);
                       add("AIM", "mouse2", w-162*u, h-94*u, 64*u);
                       add("FIRE", "mouse0", w-90*u, h-94*u, 72*u);
-                      add("MELEE", "KeyF", w-248*u, h-48*u, 78*u);
-                      add("SWAP", "KeyQ", w-162*u, h-48*u, 64*u);
+                      add("MELEE", "KeyV", w-248*u, h-48*u, 78*u);
+                      add("SWAP", "Digit1", w-162*u, h-48*u, 64*u);
                       add("JUMP", "Space", w-90*u, h-48*u, 72*u);
                   }
                   void text(Canvas canvas, String label, float x, float y, float size, int color) {
@@ -639,13 +770,11 @@ jobs:
                           paint.setStyle(Paint.Style.FILL); paint.setColor(0x55323C44); canvas.drawCircle(joyX,joyY,radius,paint);
                           paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(1.3f*unit); paint.setColor(0x99BBE4DD); canvas.drawCircle(joyX,joyY,radius,paint);
                           paint.setStyle(Paint.Style.FILL); paint.setColor(0xAA80C9BC); canvas.drawCircle(joyX+knobX,joyY+knobY,23*unit,paint);
-                          text(canvas,"MOVE",joyX,joyY+radius+15*unit,10,0xBBDDEDE9);
-                          paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(unit); paint.setColor(0x448AC5BB); canvas.drawRoundRect(look,18*unit,18*unit,paint);
-                          text(canvas,"DRAG TO LOOK",look.centerX(),look.centerY(),11,0x778AD4C6);
+                          text(canvas,movement.contains("ShiftLeft")?"SPRINT":"MOVE",joyX,joyY+radius+15*unit,10,0xBBDDEDE9);
                       }
                       for (Control control : controls) {
                           if (!shown && !control.code.equals("menu")) continue;
-                          boolean pressed=false;
+                          boolean pressed=control.code.equals("autoSprint") && autoSprint;
                           for (Touch touch:touches.values()) if (touch.control==control) pressed=true;
                           paint.setStyle(Paint.Style.FILL); paint.setColor(pressed?0xCC5BACA0:0x99404A50);
                           canvas.drawRoundRect(control.box,12*unit,12*unit,paint);
@@ -655,7 +784,7 @@ jobs:
                       }
                   }
                   void press(Control control, boolean down) {
-                      if (control.code.equals("menu")) return;
+                      if (control.code.equals("menu") || control.code.equals("autoSprint")) return;
                       if (control.code.startsWith("mouse")) send("mouse","",down,control.code.equals("mouse2")?2:0,0,0);
                       else key(control.code,down);
                   }
@@ -663,17 +792,14 @@ jobs:
                       float dx=x-joyX,dy=y-joyY;
                       float length=(float)Math.hypot(dx,dy), scale=length>radius?radius/length:1;
                       knobX=dx*scale; knobY=dy*scale;
-                      Set<String> next = new HashSet<>();
-                      if (knobX < -radius*.28f) next.add("KeyA");
-                      if (knobX > radius*.28f) next.add("KeyD");
-                      if (knobY < -radius*.28f) next.add("KeyW");
-                      if (knobY > radius*.28f) next.add("KeyS");
+                      Set<String> next = ControllerInput.movement(knobX/radius,knobY/radius,autoSprint,movement.contains("ShiftLeft"));
                       for (String code:movement) if (!next.contains(code)) key(code,false);
                       for (String code:next) if (!movement.contains(code)) key(code,true);
                       movement.clear(); movement.addAll(next);
                   }
                   boolean hasKind(String kind) { for (Touch t:touches.values()) if (t.kind.equals(kind)) return true; return false; }
                   void releaseAll() {
+                      removeCallbacks(flushLook);lookQueued=false;pendingLookX=pendingLookY=0;
                       touches.clear(); movement.clear(); knobX=knobY=0;
                       if (web!=null) send("reset","",false,0,0,0);
                       invalidate();
@@ -693,23 +819,25 @@ jobs:
                           if (shown && Math.hypot(x-joyX,y-joyY)<radius*1.3f && !hasKind("joy")) {
                               touches.put(id,new Touch("joy",null,x,y)); joystick(x,y); invalidate(); return true;
                           }
-                          if (shown && look.contains(x,y) && !hasKind("look")) {
+                          if (shown && gamePlaying && !hasKind("look")) {
                               touches.put(id,new Touch("look",null,x,y)); return true;
                           }
                           return !touches.isEmpty();
                       }
                       if (action==MotionEvent.ACTION_MOVE) {
+                          boolean redraw=false;
                           for (int i=0;i<event.getPointerCount();i++) {
                               Touch touch=touches.get(event.getPointerId(i)); if (touch==null) continue;
                               float px=event.getX(i),py=event.getY(i);
-                              if (touch.kind.equals("joy")) joystick(px,py);
+                              if (touch.kind.equals("joy")) {joystick(px,py);redraw=true;}
                               if (touch.kind.equals("look")) {
                                   float gain=new float[]{.65f,1.25f,2.2f}[sensitivityIndex]/unit;
-                                  send("look","",false,0,(px-touch.x)*gain,(py-touch.y)*gain);
+                                  pendingLookX+=(px-touch.x)*gain;pendingLookY+=(py-touch.y)*gain;
+                                  if(!lookQueued){lookQueued=true;postDelayed(flushLook,16);}
                               }
                               touch.x=px; touch.y=py;
                           }
-                          invalidate(); return true;
+                          if(redraw)invalidate(); return true;
                       }
                       if (action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_POINTER_UP) {
                           Touch touch=touches.remove(id);
@@ -720,6 +848,10 @@ jobs:
                                   for (Touch other:touches.values()) if (other.control==touch.control) stillHeld=true;
                                   if (!stillHeld) press(touch.control,false);
                                   if (touch.control.code.equals("menu") && touch.control.box.contains(x,y)) settings();
+                                  if (touch.control.code.equals("autoSprint") && touch.control.box.contains(x,y)) {
+                                      autoSprint=!autoSprint;getPreferences(0).edit().putBoolean("autoSprint",autoSprint).apply();
+                                      joystick(joyX+knobX,joyY+knobY);
+                                  }
                               }
                           }
                           invalidate(); return true;
@@ -729,76 +861,13 @@ jobs:
                   }
               }
           }
-          VEL_SOURCE_7_END
-          
-          cat > 'app/src/main/java/com/velgame/mobile/GraphicsCompatibility.java' <<'VEL_SOURCE_8_END'
-          package com.velgame.mobile;
-          
-          import java.nio.charset.StandardCharsets;
-          import java.security.MessageDigest;
-          
-          /** Targeted adaptation of the audited, buffer-backed October 8 renderer. */
-          public final class GraphicsCompatibility {
-              public static final String ENGINE_SHA = "61192df377020627f52fa7e9fd28047bd53662aa46e5e3cd6e7fad0c5c35cc98";
-              public static final String CAPS_SHA = "a3fa06776c28a1c4e17fee5660b0c754ccc947813adcf70053483de9cfffa374";
-              public static String sha256(byte[] bytes) throws Exception {
-                  byte[] hash = MessageDigest.getInstance("SHA-256").digest(bytes);
-                  StringBuilder result = new StringBuilder();
-                  for (byte value : hash) result.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-                  return result.toString();
-              }
-              public static byte[] patch(byte[] original, boolean wasm, String probe) throws Exception {
-                  if (!sha256(original).equals(wasm ? ENGINE_SHA : CAPS_SHA))
-                      throw new IllegalStateException("The website updated its " + (wasm ? "engine" : "graphics checks") + ". This compatibility patch must be reviewed for the new version.");
-                  if (!wasm) {
-                      String source = new String(original, StandardCharsets.UTF_8);
-                      source = replaceOnce(source, "['MAX_VERTEX_UNIFORM_VECTORS', 264]", "['MAX_VERTEX_UNIFORM_VECTORS', 256]");
-                      source = replaceOnce(source, "['MAX_FRAGMENT_UNIFORM_VECTORS', 264]", "['MAX_FRAGMENT_UNIFORM_VECTORS', 256]");
-                      source = replaceOnce(source, "  const missing = [];", "  const bufferFailure = velCheckUniformBuffers(gl);\n  if (bufferFailure) return bufferFailure;\n  const missing = [];");
-                      return (source + "\n" + probe).getBytes(StandardCharsets.UTF_8);
-                  }
-                  byte[] result = original.clone();
-                  // QueryCaps: constants now use UBOs, so do not reserve 8 default-uniform
-                  // vectors from the D3D logical 256-constant capacity.
-                  edit(result, 0x189e8e, new int[]{0x41,0x08,0x6b}, new int[]{0x41,0x00,0x6b});
-                  // QueryCaps fragment check: require >= 256 rather than >= 264.
-                  edit(result, 0x189ed4, new int[]{0x41,0x88,0x02,0x48}, new int[]{0x41,0x80,0x02,0x48});
-                  // R_CheckDxCaps: require > 255 rather than > 263 for both stages.
-                  edit(result, 0x27192b, new int[]{0x41,0x87,0x02,0x4a}, new int[]{0x41,0xff,0x01,0x4a});
-                  edit(result, 0x271955, new int[]{0x41,0x87,0x02,0x4a}, new int[]{0x41,0xff,0x01,0x4a});
-                  replaceLabel(result, "MAX_VERTEX_UNIFORM_VECTORS >= 264", "MAX_VERTEX_UNIFORM_VECTORS >= 256");
-                  replaceLabel(result, "MAX_FRAGMENT_UNIFORM_VECTORS >= 264", "MAX_FRAGMENT_UNIFORM_VECTORS >= 256");
-                  return result;
-              }
-              private static String replaceOnce(String text, String old, String replacement) {
-                  int at = text.indexOf(old);
-                  if (at < 0 || text.indexOf(old, at+old.length()) >= 0) throw new IllegalStateException("Graphics patch signature mismatch");
-                  return text.substring(0,at) + replacement + text.substring(at+old.length());
-              }
-              private static void edit(byte[] bytes, int at, int[] before, int[] after) {
-                  for (int i=0;i<before.length;i++) if ((bytes[at+i]&255)!=before[i]) throw new IllegalStateException("Engine patch signature mismatch");
-                  for (int i=0;i<after.length;i++) bytes[at+i]=(byte)after[i];
-              }
-              private static void replaceLabel(byte[] bytes, String before, String after) {
-                  byte[] old = before.getBytes(StandardCharsets.US_ASCII), next = after.getBytes(StandardCharsets.US_ASCII);
-                  int found=-1;
-                  for (int i=0;i<=bytes.length-old.length;i++) {
-                      boolean same=true;
-                      for (int j=0;j<old.length;j++) if (bytes[i+j]!=old[j]) {same=false;break;}
-                      if (same) { if(found>=0)throw new IllegalStateException("Ambiguous engine label");found=i; }
-                  }
-                  if(found<0 || old.length!=next.length)throw new IllegalStateException("Missing engine label");
-                  System.arraycopy(next,0,bytes,found,next.length);
-              }
-          }
-          VEL_SOURCE_8_END
-          
+          VEL_SOURCE_10_END
 
       - name: Build APK
         run: gradle --no-daemon :app:assembleDebug
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Vel-Controller-3-APK
+          name: Vel-Controller-5-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
